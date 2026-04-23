@@ -1,11 +1,80 @@
-import { useCallback, useId, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type DragEvent } from 'react'
 import {
   fetchUserTaxOverview,
   isLikelyUuid,
   type UserTaxOverviewResponse,
 } from './api/capstone'
-import { useFileUpload } from './hooks/useFileUpload'
+import { useFileUpload, validateUploadCandidate } from './hooks/useFileUpload'
 import './App.css'
+
+type DragScanState =
+  | { kind: 'idle' }
+  | { kind: 'opaque'; hint: string }
+  | { kind: 'preview'; accepted: number; rejected: { name: string; detail: string }[] }
+
+function collectFilesFromDataTransfer(dt: DataTransfer): File[] {
+  const out: File[] = []
+  const seen = new Set<string>()
+  const push = (f: File | null) => {
+    if (!f) return
+    const key = `${f.name}\0${f.size}\0${f.lastModified}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(f)
+  }
+  if (dt.items?.length) {
+    for (const item of Array.from(dt.items)) {
+      if (item.kind === 'file') push(item.getAsFile())
+    }
+  }
+  if (dt.files?.length) {
+    for (const f of Array.from(dt.files)) push(f)
+  }
+  return out
+}
+
+function scanDataTransfer(dt: DataTransfer): DragScanState {
+  const types = Array.from(dt.types)
+  const offersFiles = types.includes('Files')
+  const collected = collectFilesFromDataTransfer(dt)
+
+  if (collected.length === 0) {
+    if (offersFiles) {
+      return {
+        kind: 'opaque',
+        hint: 'Drop to add — each file is checked for type and size. Or use Browse / Enter.',
+      }
+    }
+    return {
+      kind: 'opaque',
+      hint: 'Only files from your device can be dropped here. Click this area or Browse, or press Enter while focused.',
+    }
+  }
+
+  const rejected: { name: string; detail: string }[] = []
+  let accepted = 0
+  for (const f of collected) {
+    const err = validateUploadCandidate(f)
+    if (err) {
+      const sep = `${f.name}: `
+      const detail = err.startsWith(sep) ? err.slice(sep.length) : err
+      rejected.push({ name: f.name, detail })
+    } else {
+      accepted++
+    }
+  }
+  return { kind: 'preview', accepted, rejected }
+}
+
+function dragTone(scan: DragScanState): 'idle' | 'unknown' | 'accept' | 'reject' | 'mixed' {
+  if (scan.kind === 'idle') return 'idle'
+  if (scan.kind === 'opaque') return 'unknown'
+  if (scan.rejected.length === 0) return 'accept'
+  if (scan.accepted === 0) return 'reject'
+  return 'mixed'
+}
+
+type DragOverlay = { state: 'off' } | { state: 'on'; scan: DragScanState }
 
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`
@@ -22,11 +91,37 @@ function formatAmount(v: number | string): string {
 function App() {
   const inputId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
-  const { files, addFiles, removeFile, uploadAll, progress, isUploading, errors } =
-    useFileUpload()
+  const {
+    files,
+    addFiles,
+    removeFile,
+    uploadAll,
+    progress,
+    isUploading,
+    errors,
+    uploadFileIndex,
+    uploadFileTotal,
+    uploadCurrentName,
+    isLocalIngesting,
+    localIngestProgress,
+    localIngestFileIndex,
+    localIngestFileTotal,
+    localIngestCurrentName,
+  } = useFileUpload()
 
-  const [dragActive, setDragActive] = useState(false)
+  const transferBusy = isUploading || isLocalIngesting
+
+  const [dragOverlay, setDragOverlay] = useState<DragOverlay>({ state: 'off' })
   const [uploadSuccess, setUploadSuccess] = useState(false)
+  /** Keep the bar at 100% briefly after a successful batch, then hide it. */
+  const [showPostSuccessProgress, setShowPostSuccessProgress] = useState(false)
+  const postSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (postSuccessTimerRef.current) clearTimeout(postSuccessTimerRef.current)
+    }
+  }, [])
 
   const [userIdInput, setUserIdInput] = useState('')
   const [overview, setOverview] = useState<UserTaxOverviewResponse | null>(null)
@@ -56,21 +151,70 @@ function App() {
     }
   }, [userIdInput])
 
+  const updateDragScan = (e: DragEvent) => {
+    e.preventDefault()
+    if (transferBusy) return
+    const scan = scanDataTransfer(e.dataTransfer)
+    setDragOverlay({ state: 'on', scan })
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
   const onDrop = (e: DragEvent) => {
     e.preventDefault()
-    setDragActive(false)
-    if (isUploading) return
-    if (e.dataTransfer.files?.length) {
+    setDragOverlay({ state: 'off' })
+    if (transferBusy) return
+    const list = e.dataTransfer.files
+    if (list?.length) {
       setUploadSuccess(false)
-      addFiles(e.dataTransfer.files)
+      void addFiles(list)
     }
   }
 
+  const dragActive = dragOverlay.state === 'on'
+  const dragScan: DragScanState = dragOverlay.state === 'on' ? dragOverlay.scan : { kind: 'idle' }
+
   const handleUploadAll = async () => {
     setUploadSuccess(false)
+    setShowPostSuccessProgress(false)
+    if (postSuccessTimerRef.current) {
+      clearTimeout(postSuccessTimerRef.current)
+      postSuccessTimerRef.current = null
+    }
     const ok = await uploadAll()
-    if (ok) setUploadSuccess(true)
+    if (ok) {
+      setUploadSuccess(true)
+      setShowPostSuccessProgress(true)
+      postSuccessTimerRef.current = setTimeout(() => {
+        postSuccessTimerRef.current = null
+        setShowPostSuccessProgress(false)
+      }, 900)
+    }
   }
+
+  const showUploadProgress =
+    isLocalIngesting || isUploading || showPostSuccessProgress
+
+  const uploadBarPercent = isLocalIngesting
+    ? localIngestProgress
+    : isUploading
+      ? progress
+      : showPostSuccessProgress
+        ? 100
+        : 0
+
+  const uploadProgressLabel = isLocalIngesting
+    ? `Reading from device ${uploadBarPercent}%` +
+      (localIngestCurrentName
+        ? `, file ${localIngestFileIndex} of ${localIngestFileTotal}: ${localIngestCurrentName}`
+        : '')
+    : isUploading
+      ? `Uploading ${uploadBarPercent}%` +
+        (uploadCurrentName
+          ? `, file ${uploadFileIndex} of ${uploadFileTotal}: ${uploadCurrentName}`
+          : '')
+      : showPostSuccessProgress
+        ? 'Upload finished, 100%'
+        : 'No transfer in progress'
 
   return (
     <div className="dashboard">
@@ -90,16 +234,13 @@ function App() {
         <section
           className={`panel upload-panel${dragActive ? ' drag-active' : ''}`}
           onDragEnter={(e) => {
-            e.preventDefault()
-            if (!isUploading) setDragActive(true)
+            if (transferBusy) return
+            updateDragScan(e)
           }}
-          onDragOver={(e) => {
-            e.preventDefault()
-            if (!isUploading) setDragActive(true)
-          }}
+          onDragOver={updateDragScan}
           onDragLeave={(e) => {
             if (e.currentTarget.contains(e.relatedTarget as Node)) return
-            setDragActive(false)
+            setDragOverlay({ state: 'off' })
           }}
           onDrop={onDrop}
         >
@@ -119,27 +260,75 @@ function App() {
               const list = e.target.files
               if (list?.length) {
                 setUploadSuccess(false)
-                addFiles(list)
+                void addFiles(list)
               }
               e.target.value = ''
             }}
           />
 
           <div
-            className="drop-zone"
+            className={`drop-zone${dragActive ? ` drop-zone--tone-${dragTone(dragScan)}` : ''}`}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
+              if (transferBusy) return
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 inputRef.current?.click()
               }
             }}
-            onClick={() => !isUploading && inputRef.current?.click()}
+            onClick={() => !transferBusy && inputRef.current?.click()}
           >
-            <div className="drop-icon" aria-hidden />
-            <p className="drop-title">Drop files here or browse</p>
-            <p className="drop-hint">Your queue stays in React state until you upload.</p>
+            <div className={`drop-icon drop-icon--${dragActive ? dragTone(dragScan) : 'idle'}`} aria-hidden />
+            {dragActive && dragScan.kind === 'preview' ? (
+              <>
+                <p className="drop-title">Release to add to queue</p>
+                <div className="drop-indicators" aria-live="polite">
+                  <span className="drop-chip drop-chip--ok">
+                    <span className="drop-chip-mark" aria-hidden>
+                      ✓
+                    </span>
+                    {dragScan.accepted} accepted
+                  </span>
+                  {dragScan.rejected.length > 0 && (
+                    <span className="drop-chip drop-chip--bad">
+                      <span className="drop-chip-mark" aria-hidden>
+                        ✗
+                      </span>
+                      {dragScan.rejected.length} rejected
+                    </span>
+                  )}
+                </div>
+                {dragScan.rejected.length > 0 && (
+                  <ul className="drop-reject-list">
+                    {dragScan.rejected.slice(0, 5).map((r) => (
+                      <li key={r.name}>
+                        <span className="drop-reject-name">{r.name}</span>
+                        <span className="drop-reject-detail">{r.detail}</span>
+                      </li>
+                    ))}
+                    {dragScan.rejected.length > 5 && (
+                      <li className="drop-reject-more">+{dragScan.rejected.length - 5} more</li>
+                    )}
+                  </ul>
+                )}
+              </>
+            ) : dragActive && dragScan.kind === 'opaque' ? (
+              <>
+                <p className="drop-title">Drop files here</p>
+                <p className="drop-hint drop-hint--live" id={`${inputId}-drop-hint`}>
+                  {dragScan.hint}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="drop-title">Drop files here or click to browse</p>
+                <p className="drop-hint" id={`${inputId}-drop-hint`}>
+                  PDF, JPG, or PNG · under 10MB each. Same rules apply when you pick files with the
+                  button below — drag is optional.
+                </p>
+              </>
+            )}
           </div>
 
           <div className="actions">
@@ -147,7 +336,7 @@ function App() {
               type="button"
               className="btn primary"
               onClick={() => inputRef.current?.click()}
-              disabled={isUploading}
+              disabled={transferBusy}
             >
               Browse
             </button>
@@ -155,23 +344,62 @@ function App() {
               type="button"
               className="btn"
               onClick={() => void handleUploadAll()}
-              disabled={isUploading || files.length === 0}
+              disabled={transferBusy || files.length === 0}
             >
               {isUploading ? 'Uploading…' : 'Upload all'}
             </button>
           </div>
 
-          <div className="progress-block" aria-live="polite">
-            <div className="progress-track">
-              <div
-                className="progress-fill"
-                style={{ width: `${isUploading ? progress : uploadSuccess ? 100 : 0}%` }}
+          {showUploadProgress && (
+            <div className="upload-progress-section" aria-live="polite">
+              <div className="upload-progress-head">
+                <span className="upload-progress-title">
+                  {isLocalIngesting
+                    ? 'Reading from your device'
+                    : isUploading
+                      ? 'Uploading to server'
+                      : 'Upload complete'}
+                </span>
+              </div>
+              {isLocalIngesting &&
+                localIngestCurrentName &&
+                localIngestFileTotal > 0 && (
+                  <p className="upload-progress-file" title={localIngestCurrentName}>
+                    <span className="upload-progress-n">{localIngestFileIndex}</span>
+                    <span className="upload-progress-of"> / {localIngestFileTotal}</span>
+                    <span className="upload-progress-sep"> · </span>
+                    <span className="upload-progress-name">{localIngestCurrentName}</span>
+                  </p>
+                )}
+              {isUploading && uploadCurrentName && uploadFileTotal > 0 && (
+                <p className="upload-progress-file" title={uploadCurrentName}>
+                  <span className="upload-progress-n">{uploadFileIndex}</span>
+                  <span className="upload-progress-of"> / {uploadFileTotal}</span>
+                  <span className="upload-progress-sep"> · </span>
+                  <span className="upload-progress-name">{uploadCurrentName}</span>
+                </p>
+              )}
+              <progress
+                className="visually-hidden"
+                max={100}
+                value={uploadBarPercent}
+                aria-label={uploadProgressLabel}
               />
+              <div className="upload-progress-bar-wrap">
+                <div
+                  className="progress-track upload-progress-bar"
+                  role="presentation"
+                  aria-hidden
+                >
+                  <div
+                    className="progress-fill progress-fill--yellow"
+                    style={{ width: `${uploadBarPercent}%` }}
+                  />
+                </div>
+                <span className="upload-progress-overlay-pct">{uploadBarPercent}%</span>
+              </div>
             </div>
-            <span className="progress-meta">
-              {isUploading ? `${progress}%` : uploadSuccess ? 'Done' : 'Idle'}
-            </span>
-          </div>
+          )}
 
           {uploadSuccess && !isUploading && (
             <p className="success-banner" role="status">
@@ -208,7 +436,7 @@ function App() {
                         ev.stopPropagation()
                         removeFile(id)
                       }}
-                      disabled={isUploading}
+                      disabled={transferBusy}
                     >
                       Remove
                     </button>
