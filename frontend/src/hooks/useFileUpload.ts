@@ -47,6 +47,8 @@ export interface StagedFile {
   localProgress: number
   /** Uploading this file to the server, 0–100. */
   uploadProgress: number
+  /** Set when this file’s POST failed; cleared on the next upload attempt. */
+  uploadError: string | null
   /**
    * Tax / finance document category (required before upload). Values align with
    * Java-style enum names for future capstone DTOs (`W2`, `FORM_1099`, …).
@@ -73,7 +75,7 @@ export interface UseFileUploadOptions {
 }
 
 function defaultUploadUrl(): string {
-  return import.meta.env.VITE_UPLOAD_URL ?? '/api/v1/documents/upload'
+  return import.meta.env.VITE_UPLOAD_URL ?? '/api/documents'
 }
 
 function messageFromAxiosError(error: AxiosError): string {
@@ -159,6 +161,7 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
           | 'previewUrl'
           | 'localProgress'
           | 'uploadProgress'
+          | 'uploadError'
           | 'entityType'
           | 'entityTypeAutoDetected'
         >
@@ -170,7 +173,7 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
   )
 
   const setFileEntityType = useCallback((id: string, entityType: DocumentEntityValue) => {
-    patchFile(id, { entityType, entityTypeAutoDetected: false })
+    patchFile(id, { entityType, entityTypeAutoDetected: false, uploadError: null })
   }, [patchFile])
 
   const ingestOne = useCallback(
@@ -213,6 +216,7 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
           previewUrl: null,
           localProgress: 0,
           uploadProgress: 0,
+          uploadError: null,
           entityType: inferred,
           entityTypeAutoDetected: inferred !== null,
         }
@@ -259,8 +263,11 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
     uploadingRef.current = true
     setIsUploading(true)
     setErrors([])
-    setFiles((prev) => prev.map((f) => ({ ...f, uploadProgress: 0 })))
+    setFiles((prev) =>
+      prev.map((f) => ({ ...f, uploadProgress: 0, uploadError: null })),
+    )
 
+    let allSucceeded = true
     try {
       for (const item of queue) {
         const { id, file, entityType } = item
@@ -270,29 +277,33 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
           body.append('entityType', entityType)
         }
 
-        await axios.post(uploadUrl, body, {
-          onUploadProgress: (evt) => {
-            let pct: number
-            if (evt.total && evt.total > 0) {
-              pct = Math.min(100, Math.round((evt.loaded / evt.total) * 100))
-            } else {
-              pct = Math.min(100, Math.round((evt.loaded / Math.max(file.size, 1)) * 100))
-            }
-            patchFile(id, { uploadProgress: pct })
-          },
-        })
-
-        patchFile(id, { uploadProgress: 100 })
+        try {
+          await axios.post(uploadUrl, body, {
+            onUploadProgress: (evt) => {
+              let pct: number
+              if (evt.total && evt.total > 0) {
+                pct = Math.min(100, Math.round((evt.loaded / evt.total) * 100))
+              } else {
+                pct = Math.min(100, Math.round((evt.loaded / Math.max(file.size, 1)) * 100))
+              }
+              patchFile(id, { uploadProgress: pct })
+            },
+          })
+          patchFile(id, { uploadProgress: 100, uploadError: null })
+        } catch (e) {
+          allSucceeded = false
+          const msg = axios.isAxiosError(e)
+            ? messageFromAxiosError(e)
+            : e instanceof Error
+              ? e.message
+              : 'Upload failed'
+          patchFile(id, { uploadProgress: 0, uploadError: msg })
+        }
       }
 
-      setFiles([])
-      return true
-    } catch (e) {
-      setFiles((prev) => prev.map((f) => ({ ...f, uploadProgress: 0 })))
-      if (axios.isAxiosError(e)) {
-        setErrors([messageFromAxiosError(e)])
-      } else {
-        setErrors([e instanceof Error ? e.message : 'Upload failed'])
+      if (allSucceeded) {
+        setFiles([])
+        return true
       }
       return false
     } finally {

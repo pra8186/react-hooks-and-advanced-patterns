@@ -1,0 +1,28 @@
+.document-removal-queue-card {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  text-align: left;
+}
+
+.document-removal-queue-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-removal-queue-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 45%, var(--bg));
+  border: 1px solid color-mix(in srgb, #f87171 50%, var(--border));
+}

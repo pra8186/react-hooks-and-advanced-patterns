@@ -58,8 +58,15 @@ export function FilePreviewCard({
   disabled: boolean
   isUploading: boolean
 }) {
-  const { file, previewUrl, localProgress, uploadProgress, entityType, entityTypeAutoDetected } =
-    item
+  const {
+    file,
+    previewUrl,
+    localProgress,
+    uploadProgress,
+    uploadError,
+    entityType,
+    entityTypeAutoDetected,
+  } = item
   const image = isImageStagedFile(file)
   const kind = image ? 'image' : 'pdf'
   const pdfPreviewTitleId = useId()
@@ -171,6 +178,11 @@ export function FilePreviewCard({
           uploadProgress={uploadProgress}
           isUploading={isUploading}
         />
+        {uploadError ? (
+          <p className="file-preview-upload-error" role="alert">
+            {uploadError}
+          </p>
+        ) : null}
       </div>
 
       {pdfModalOpen &&

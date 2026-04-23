@@ -176,6 +176,17 @@
   line-height: 1.35;
 }
 
+.file-preview-upload-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 45%, var(--bg));
+  border: 1px solid color-mix(in srgb, #f87171 50%, var(--border));
+}
+
 .file-preview-pdf-modal-backdrop {
   position: fixed;
   inset: 0;

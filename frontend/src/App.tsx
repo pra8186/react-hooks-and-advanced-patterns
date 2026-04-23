@@ -4,8 +4,11 @@ import {
   isLikelyUuid,
   type UserTaxOverviewResponse,
 } from './api/capstone'
+import { fetchDocumentsList, type DocumentListItem } from './api/documents'
+import { DocumentRemovalQueueCard } from './components/DocumentRemovalQueueCard'
 import { FilePreviewCard } from './components/FilePreviewCard'
 import { FileTransferBar } from './components/FileTransferBar'
+import { useDocumentRemoval } from './hooks/useDocumentRemoval'
 import {
   aggregateProgressForFiles,
   useFileUpload,
@@ -109,21 +112,30 @@ function App() {
     ingestBatchIds,
   } = useFileUpload()
 
-  const transferBusy = isUploading || isLocalIngesting
-
   const everyStagedFileHasEntityType = useMemo(
     () => files.length > 0 && files.every((f) => f.entityType != null),
     [files],
   )
 
   const [dragOverlay, setDragOverlay] = useState<DragOverlay>({ state: 'off' })
-  const [uploadSuccess, setUploadSuccess] = useState(false)
   const [showPostSuccessProgress, setShowPostSuccessProgress] = useState(false)
   const postSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setToastMessage(message)
+    toastTimerRef.current = setTimeout(() => {
+      toastTimerRef.current = null
+      setToastMessage(null)
+    }, 4500)
+  }, [])
 
   useEffect(() => {
     return () => {
       if (postSuccessTimerRef.current) clearTimeout(postSuccessTimerRef.current)
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
     }
   }, [])
 
@@ -138,29 +150,84 @@ function App() {
     return aggregateProgressForFiles(files, 'uploadProgress')
   }, [files, isUploading])
 
+  const [userIdInput, setUserIdInput] = useState('')
+  const [overview, setOverview] = useState<UserTaxOverviewResponse | null>(null)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(false)
+
+  const [documents, setDocuments] = useState<DocumentListItem[]>([])
+  const [documentsLoading, setDocumentsLoading] = useState(false)
+  const [documentsError, setDocumentsError] = useState<string | null>(null)
+
+  const loadDocuments = useCallback(async () => {
+    setDocumentsError(null)
+    setDocumentsLoading(true)
+    try {
+      const list = await fetchDocumentsList()
+      setDocuments(list)
+    } catch (e) {
+      setDocumentsError(e instanceof Error ? e.message : 'Could not load documents.')
+    } finally {
+      setDocumentsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      void loadDocuments()
+    })
+  }, [loadDocuments])
+
+  const documentRemoval = useDocumentRemoval({
+    documents,
+    loadDocuments,
+    showToast,
+  })
+
+  const transferBusy =
+    isUploading || isLocalIngesting || documentRemoval.isRemoving
+
+  const selectAllDocumentsRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const el = selectAllDocumentsRef.current
+    if (!el) return
+    const n = documents.length
+    const s = documentRemoval.selectedIds.length
+    el.indeterminate = n > 0 && s > 0 && s < n
+  }, [documents.length, documentRemoval.selectedIds.length])
+
+  const aggregateRemovalProgress = documentRemoval.aggregateRemovalProgress
+
   const showGlobalProgress =
-    isLocalIngesting || isUploading || showPostSuccessProgress
+    isLocalIngesting ||
+    isUploading ||
+    showPostSuccessProgress ||
+    documentRemoval.isRemoving ||
+    documentRemoval.showPostRemovalProgress
 
   const globalProgressPercent = isLocalIngesting
     ? aggregateLocalProgress
     : isUploading
       ? aggregateUploadProgress
-      : showPostSuccessProgress
-        ? 100
-        : 0
+      : documentRemoval.isRemoving
+        ? aggregateRemovalProgress
+        : showPostSuccessProgress
+          ? 100
+          : documentRemoval.showPostRemovalProgress
+            ? 100
+            : 0
 
   const globalProgressLabel = isLocalIngesting
     ? `Overall reading from device, ${globalProgressPercent}% across ${ingestBatchIds.length} file(s)`
     : isUploading
       ? `Overall uploading to server, ${globalProgressPercent}% across ${files.length} file(s)`
-      : showPostSuccessProgress
-        ? 'Overall upload finished, 100%'
-        : ''
-
-  const [userIdInput, setUserIdInput] = useState('')
-  const [overview, setOverview] = useState<UserTaxOverviewResponse | null>(null)
-  const [overviewError, setOverviewError] = useState<string | null>(null)
-  const [overviewLoading, setOverviewLoading] = useState(false)
+      : documentRemoval.isRemoving
+        ? `Overall removing from server, ${globalProgressPercent}% across ${documentRemoval.removalRows.length} document(s)`
+        : showPostSuccessProgress
+          ? 'Overall upload finished, 100%'
+          : documentRemoval.showPostRemovalProgress
+            ? 'Overall removal finished, 100%'
+            : ''
 
   const loadOverview = useCallback(async () => {
     const trimmed = userIdInput.trim()
@@ -199,7 +266,11 @@ function App() {
     if (transferBusy) return
     const list = e.dataTransfer.files
     if (list?.length) {
-      setUploadSuccess(false)
+      setToastMessage(null)
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current)
+        toastTimerRef.current = null
+      }
       void addFiles(list)
     }
   }
@@ -208,7 +279,6 @@ function App() {
   const dragScan: DragScanState = dragOverlay.state === 'on' ? dragOverlay.scan : { kind: 'idle' }
 
   const handleUploadAll = async () => {
-    setUploadSuccess(false)
     setShowPostSuccessProgress(false)
     if (postSuccessTimerRef.current) {
       clearTimeout(postSuccessTimerRef.current)
@@ -216,7 +286,8 @@ function App() {
     }
     const ok = await uploadAll()
     if (ok) {
-      setUploadSuccess(true)
+      showToast('Documents uploaded successfully.')
+      await loadDocuments()
       setShowPostSuccessProgress(true)
       postSuccessTimerRef.current = setTimeout(() => {
         postSuccessTimerRef.current = null
@@ -233,8 +304,8 @@ function App() {
           <h1>Tax workspace</h1>
           <p className="lede">
             Pull live data from your Spring app on port 7070, and stage PDF or image uploads
-            (under 10MB) with axios progress. Dev and preview accept uploads locally; point{' '}
-            <code>VITE_UPLOAD_URL</code> at a real endpoint when you add one in Boot.
+            (under 10MB) with multipart <code>POST /api/documents</code>. The dev server stubs
+            list + upload; override with <code>VITE_UPLOAD_URL</code> if your API path differs.
           </p>
         </div>
       </header>
@@ -255,7 +326,9 @@ function App() {
         >
           <div className="panel-head">
             <h2>Documents</h2>
-            <p className="panel-sub">PDF, JPG, or PNG · max 9.99MB per file</p>
+            <p className="panel-sub">
+              <code>POST /api/documents</code> · PDF, JPG, or PNG · max 9.99MB per file
+            </p>
           </div>
 
           <input
@@ -268,7 +341,11 @@ function App() {
             onChange={(e) => {
               const list = e.target.files
               if (list?.length) {
-                setUploadSuccess(false)
+                setToastMessage(null)
+                if (toastTimerRef.current) {
+                  clearTimeout(toastTimerRef.current)
+                  toastTimerRef.current = null
+                }
                 void addFiles(list)
               }
               e.target.value = ''
@@ -367,7 +444,13 @@ function App() {
                     ? 'Overall · reading from your device'
                     : isUploading
                       ? 'Overall · uploading to server'
-                      : 'Overall · complete'}
+                      : documentRemoval.isRemoving
+                        ? 'Overall · removing from server'
+                        : showPostSuccessProgress
+                          ? 'Overall · upload complete'
+                          : documentRemoval.showPostRemovalProgress
+                            ? 'Overall · removal complete'
+                            : 'Overall · complete'}
                 </span>
               </div>
               <FileTransferBar
@@ -376,12 +459,6 @@ function App() {
                 ariaLabel={globalProgressLabel}
               />
             </div>
-          )}
-
-          {uploadSuccess && !isUploading && (
-            <p className="success-banner" role="status">
-              All files uploaded successfully.
-            </p>
           )}
 
           {errors.length > 0 && (
@@ -414,6 +491,133 @@ function App() {
                 ))}
               </ul>
             )}
+          </div>
+
+          <div className="documents-server">
+            <div className="documents-server-head">
+              <h3 className="documents-server-title">Documents on server</h3>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => void loadDocuments()}
+                disabled={documentsLoading}
+              >
+                {documentsLoading ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+            <p className="panel-sub documents-server-sub">
+              <code>GET /api/documents</code> · <code>{'DELETE /api/documents/{id}'}</code>
+            </p>
+            {documentsError && (
+              <div className="inline-errors documents-server-errors" role="alert">
+                {documentsError}
+              </div>
+            )}
+            {documentsLoading && documents.length === 0 && !documentsError ? (
+              <p className="empty soft">Loading document list…</p>
+            ) : null}
+            {!documentsLoading && documents.length === 0 && !documentsError ? (
+              <p className="empty soft">
+                No documents yet — successful uploads refresh this list and clear the queue above.
+              </p>
+            ) : null}
+            {documents.length > 0 ? (
+              <div className="table-wrap documents-table-wrap">
+                <table className="documents-table">
+                  <caption className="sr-only">Documents returned by the server</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col" className="documents-table-check">
+                        <span className="sr-only">Select all</span>
+                        <input
+                          ref={selectAllDocumentsRef}
+                          type="checkbox"
+                          checked={
+                            documents.length > 0 &&
+                            documentRemoval.selectedIds.length === documents.length
+                          }
+                          onChange={(e) => documentRemoval.setAllDocumentsSelected(e.target.checked)}
+                          disabled={
+                            documentsLoading || documentRemoval.isRemoving || documents.length === 0
+                          }
+                          aria-label="Select all documents in the list"
+                        />
+                      </th>
+                      <th scope="col">File</th>
+                      <th scope="col">Entity type</th>
+                      <th scope="col">Uploaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {documents.map((d) => (
+                      <tr key={d.id}>
+                        <td className="documents-table-check">
+                          <input
+                            type="checkbox"
+                            checked={documentRemoval.selectedIds.includes(d.id)}
+                            onChange={() => documentRemoval.toggleDocumentSelected(d.id)}
+                            disabled={documentsLoading || documentRemoval.isRemoving}
+                            aria-label={`Select ${d.originalFilename}`}
+                          />
+                        </td>
+                        <td>
+                          <span className="cell-strong">{d.originalFilename}</span>
+                          {documentRemoval.deleteErrorsByDocId[d.id] ? (
+                            <div className="documents-table-row-error" role="alert">
+                              <span>{documentRemoval.deleteErrorsByDocId[d.id]}</span>
+                              <button
+                                type="button"
+                                className="btn ghost documents-table-error-dismiss"
+                                onClick={() => documentRemoval.clearDocumentDeleteError(d.id)}
+                              >
+                                Dismiss
+                              </button>
+                            </div>
+                          ) : null}
+                        </td>
+                        <td>{d.entityType ?? '—'}</td>
+                        <td className="num">
+                          {d.uploadedAt ? new Date(d.uploadedAt).toLocaleString() : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            {documents.length > 0 ? (
+              <div className="documents-server-actions">
+                <button
+                  type="button"
+                  className="btn documents-remove-selected"
+                  onClick={() => void documentRemoval.removeSelectedDocuments()}
+                  disabled={
+                    documentsLoading ||
+                    documentRemoval.isRemoving ||
+                    documentRemoval.selectedIds.length === 0
+                  }
+                >
+                  {documentRemoval.isRemoving ? 'Removing…' : 'Remove selected from server'}
+                </button>
+              </div>
+            ) : null}
+
+            {documentRemoval.removalRows.length > 0 ? (
+              <div className="documents-removal-queue-wrap">
+                <h4 className="documents-removal-queue-title">Removing from server</h4>
+                <ul className="file-preview-grid documents-removal-queue">
+                  {documentRemoval.removalRows.map((row) => (
+                    <li key={row.id}>
+                      <DocumentRemovalQueueCard
+                        row={row}
+                        isRemoving={documentRemoval.isRemoving}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -517,6 +721,12 @@ function App() {
           )}
         </section>
       </div>
+
+      {toastMessage ? (
+        <div className="app-toast" role="status" aria-live="polite">
+          {toastMessage}
+        </div>
+      ) : null}
     </div>
   )
 }
