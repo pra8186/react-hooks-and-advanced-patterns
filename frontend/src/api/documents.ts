@@ -23,21 +23,111 @@ function messageFromAxiosError(error: AxiosError): string {
   return error.message || 'Request failed'
 }
 
-function normalizeListPayload(data: unknown): DocumentListItem[] {
-  if (Array.isArray(data)) {
-    return data.filter(isDocumentListItem)
-  }
-  if (data && typeof data === 'object' && 'documents' in data) {
-    const inner = (data as { documents: unknown }).documents
-    if (Array.isArray(inner)) return inner.filter(isDocumentListItem)
-  }
-  return []
-}
-
 function isDocumentListItem(v: unknown): v is DocumentListItem {
   if (!v || typeof v !== 'object') return false
   const o = v as Record<string, unknown>
   return typeof o.id === 'string' && typeof o.originalFilename === 'string'
+}
+
+/** Normalized page result for {@link fetchDocumentsPage}. */
+export interface FetchDocumentsPageResult {
+  items: DocumentListItem[]
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
+  totalPages: number
+}
+
+function normalizePaginatedPayload(
+  data: unknown,
+  requestPage: number,
+  requestPageSize: number,
+): FetchDocumentsPageResult {
+  if (Array.isArray(data)) {
+    const items = data.filter(isDocumentListItem)
+    const total = items.length
+    const start = requestPage * requestPageSize
+    const slice = items.slice(start, start + requestPageSize)
+    const totalPages = Math.max(1, Math.ceil(total / requestPageSize) || 1)
+    return {
+      items: slice,
+      total,
+      page: requestPage,
+      pageSize: requestPageSize,
+      hasMore: start + requestPageSize < total,
+      totalPages,
+    }
+  }
+  if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>
+    if ('content' in o && Array.isArray(o.content)) {
+      const items = o.content.filter(isDocumentListItem)
+      const total =
+        typeof o.totalElements === 'number' ? o.totalElements : items.length
+      const page = typeof o.number === 'number' ? o.number : requestPage
+      const pageSize = typeof o.size === 'number' ? o.size : requestPageSize
+      const last = o.last === true
+      const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1)
+      return {
+        items,
+        total,
+        page,
+        pageSize,
+        hasMore: !last,
+        totalPages,
+      }
+    }
+    if ('documents' in o && Array.isArray(o.documents)) {
+      const items = o.documents.filter(isDocumentListItem)
+      const total = typeof o.total === 'number' ? o.total : items.length
+      const page = typeof o.page === 'number' ? o.page : requestPage
+      const pageSize = typeof o.pageSize === 'number' ? o.pageSize : requestPageSize
+      const hasMore = typeof o.hasMore === 'boolean' ? o.hasMore : false
+      const totalPages =
+        typeof o.totalPages === 'number'
+          ? o.totalPages
+          : Math.max(1, Math.ceil(total / pageSize) || 1)
+      return { items, total, page, pageSize, hasMore, totalPages }
+    }
+  }
+  return {
+    items: [],
+    total: 0,
+    page: requestPage,
+    pageSize: requestPageSize,
+    hasMore: false,
+    totalPages: 1,
+  }
+}
+
+/**
+ * GET /api/documents?page=&pageSize=&userId=
+ * Supports Spring-style page payloads (`content`, `totalElements`, `number`, `size`, `last`)
+ * or a flat `{ documents, total, page, pageSize, hasMore, totalPages }` envelope.
+ */
+export async function fetchDocumentsPage(params: {
+  userId?: string | null
+  page?: number
+  pageSize?: number
+}): Promise<FetchDocumentsPageResult> {
+  const page = Math.max(0, params.page ?? 0)
+  const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 10))
+  const qs = new URLSearchParams()
+  qs.set('page', String(page))
+  qs.set('pageSize', String(pageSize))
+  const uid = params.userId?.trim()
+  if (uid) qs.set('userId', uid)
+  try {
+    const { data } = await client.get<unknown>(`/api/documents?${qs.toString()}`)
+    return normalizePaginatedPayload(data, page, pageSize)
+  } catch (e) {
+    if (axios.isAxiosError(e)) {
+      throw new Error(messageFromAxiosError(e), { cause: e })
+    }
+    if (e instanceof Error) throw e
+    throw new Error('Request failed', { cause: e })
+  }
 }
 
 /** DELETE /api/documents/{id} — remove one persisted document (dev stub or real API). */
@@ -53,16 +143,3 @@ export async function deleteDocument(id: string): Promise<void> {
   }
 }
 
-/** GET /api/documents — refresh after a successful multipart upload. */
-export async function fetchDocumentsList(): Promise<DocumentListItem[]> {
-  try {
-    const { data } = await client.get<unknown>('/api/documents')
-    return normalizeListPayload(data)
-  } catch (e) {
-    if (axios.isAxiosError(e)) {
-      throw new Error(messageFromAxiosError(e), { cause: e })
-    }
-    if (e instanceof Error) throw e
-    throw new Error('Request failed', { cause: e })
-  }
-}

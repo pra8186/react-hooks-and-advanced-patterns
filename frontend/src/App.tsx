@@ -4,10 +4,11 @@ import {
   isLikelyUuid,
   type UserTaxOverviewResponse,
 } from './api/capstone'
-import { fetchDocumentsList, type DocumentListItem } from './api/documents'
 import { DocumentRemovalQueueCard } from './components/DocumentRemovalQueueCard'
+import { TaxPanelDocumentSync } from './components/TaxPanelDocumentSync'
 import { FilePreviewCard } from './components/FilePreviewCard'
 import { FileTransferBar } from './components/FileTransferBar'
+import { useDocumentList } from './hooks/useDocumentList'
 import { useDocumentRemoval } from './hooks/useDocumentRemoval'
 import {
   aggregateProgressForFiles,
@@ -155,32 +156,16 @@ function App() {
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(false)
 
-  const [documents, setDocuments] = useState<DocumentListItem[]>([])
-  const [documentsLoading, setDocumentsLoading] = useState(false)
-  const [documentsError, setDocumentsError] = useState<string | null>(null)
+  const documentScopeUserId = useMemo(() => {
+    const t = userIdInput.trim()
+    return isLikelyUuid(t) ? t : null
+  }, [userIdInput])
 
-  const loadDocuments = useCallback(async () => {
-    setDocumentsError(null)
-    setDocumentsLoading(true)
-    try {
-      const list = await fetchDocumentsList()
-      setDocuments(list)
-    } catch (e) {
-      setDocumentsError(e instanceof Error ? e.message : 'Could not load documents.')
-    } finally {
-      setDocumentsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      void loadDocuments()
-    })
-  }, [loadDocuments])
+  const documentList = useDocumentList(documentScopeUserId)
 
   const documentRemoval = useDocumentRemoval({
-    documents,
-    loadDocuments,
+    documents: documentList.documents,
+    refresh: documentList.refresh,
     showToast,
   })
 
@@ -191,10 +176,10 @@ function App() {
   useEffect(() => {
     const el = selectAllDocumentsRef.current
     if (!el) return
-    const n = documents.length
+    const n = documentList.documents.length
     const s = documentRemoval.selectedIds.length
     el.indeterminate = n > 0 && s > 0 && s < n
-  }, [documents.length, documentRemoval.selectedIds.length])
+  }, [documentList.documents.length, documentRemoval.selectedIds.length])
 
   const aggregateRemovalProgress = documentRemoval.aggregateRemovalProgress
 
@@ -287,7 +272,7 @@ function App() {
     const ok = await uploadAll()
     if (ok) {
       showToast('Documents uploaded successfully.')
-      await loadDocuments()
+      await documentList.refresh()
       setShowPostSuccessProgress(true)
       postSuccessTimerRef.current = setTimeout(() => {
         postSuccessTimerRef.current = null
@@ -499,29 +484,30 @@ function App() {
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => void loadDocuments()}
-                disabled={documentsLoading}
+                onClick={() => void documentList.refresh()}
+                disabled={documentList.loading}
               >
-                {documentsLoading ? 'Refreshing…' : 'Refresh'}
+                {documentList.loading ? 'Refreshing…' : 'Refresh'}
               </button>
             </div>
             <p className="panel-sub documents-server-sub">
-              <code>GET /api/documents</code> · <code>{'DELETE /api/documents/{id}'}</code>
+              <code>{'GET /api/documents?page=&pageSize=&userId='}</code> ·{' '}
+              <code>{'DELETE /api/documents/{id}'}</code>
             </p>
-            {documentsError && (
+            {documentList.error && (
               <div className="inline-errors documents-server-errors" role="alert">
-                {documentsError}
+                {documentList.error}
               </div>
             )}
-            {documentsLoading && documents.length === 0 && !documentsError ? (
+            {documentList.loading && documentList.documents.length === 0 && !documentList.error ? (
               <p className="empty soft">Loading document list…</p>
             ) : null}
-            {!documentsLoading && documents.length === 0 && !documentsError ? (
+            {!documentList.loading && documentList.total === 0 && !documentList.error ? (
               <p className="empty soft">
                 No documents yet — successful uploads refresh this list and clear the queue above.
               </p>
             ) : null}
-            {documents.length > 0 ? (
+            {documentList.documents.length > 0 ? (
               <div className="table-wrap documents-table-wrap">
                 <table className="documents-table">
                   <caption className="sr-only">Documents returned by the server</caption>
@@ -533,12 +519,14 @@ function App() {
                           ref={selectAllDocumentsRef}
                           type="checkbox"
                           checked={
-                            documents.length > 0 &&
-                            documentRemoval.selectedIds.length === documents.length
+                            documentList.documents.length > 0 &&
+                            documentRemoval.selectedIds.length === documentList.documents.length
                           }
                           onChange={(e) => documentRemoval.setAllDocumentsSelected(e.target.checked)}
                           disabled={
-                            documentsLoading || documentRemoval.isRemoving || documents.length === 0
+                            documentList.loading ||
+                            documentRemoval.isRemoving ||
+                            documentList.documents.length === 0
                           }
                           aria-label="Select all documents in the list"
                         />
@@ -549,14 +537,14 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {documents.map((d) => (
+                    {documentList.documents.map((d) => (
                       <tr key={d.id}>
                         <td className="documents-table-check">
                           <input
                             type="checkbox"
                             checked={documentRemoval.selectedIds.includes(d.id)}
                             onChange={() => documentRemoval.toggleDocumentSelected(d.id)}
-                            disabled={documentsLoading || documentRemoval.isRemoving}
+                            disabled={documentList.loading || documentRemoval.isRemoving}
                             aria-label={`Select ${d.originalFilename}`}
                           />
                         </td>
@@ -586,14 +574,52 @@ function App() {
               </div>
             ) : null}
 
-            {documents.length > 0 ? (
+            {documentList.total > 0 ? (
+              <div className="documents-pagination" aria-label="Document list pages">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => void documentList.prevPage()}
+                  disabled={!documentList.hasPreviousPage || documentList.loading}
+                >
+                  Previous
+                </button>
+                <span className="documents-pagination-meta">
+                  Page {documentList.page + 1} of {documentList.totalPages} · {documentList.total}{' '}
+                  total
+                </span>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => void documentList.nextPage()}
+                  disabled={!documentList.hasMore || documentList.loading}
+                >
+                  Next
+                </button>
+                <label className="documents-page-size">
+                  <span className="documents-page-size-label">Per page</span>
+                  <select
+                    className="documents-page-size-select"
+                    value={documentList.pageSize}
+                    onChange={(e) => void documentList.setPageSize(Number(e.target.value))}
+                    disabled={documentList.loading}
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                  </select>
+                </label>
+              </div>
+            ) : null}
+
+            {documentList.documents.length > 0 ? (
               <div className="documents-server-actions">
                 <button
                   type="button"
                   className="btn documents-remove-selected"
                   onClick={() => void documentRemoval.removeSelectedDocuments()}
                   disabled={
-                    documentsLoading ||
+                    documentList.loading ||
                     documentRemoval.isRemoving ||
                     documentRemoval.selectedIds.length === 0
                   }
@@ -651,6 +677,8 @@ function App() {
               </button>
             </div>
           </div>
+
+          <TaxPanelDocumentSync documentUserId={documentScopeUserId} />
 
           {overviewError && (
             <div className="inline-errors overview-errors" role="alert">

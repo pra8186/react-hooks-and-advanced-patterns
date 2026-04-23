@@ -486,6 +486,40 @@
   font-size: 12px;
 }
 
+.documents-pagination {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.documents-pagination-meta {
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.documents-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.documents-page-size-label {
+  white-space: nowrap;
+}
+
+.documents-page-size-select {
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
 .documents-server-actions {
   margin-top: 14px;
 }

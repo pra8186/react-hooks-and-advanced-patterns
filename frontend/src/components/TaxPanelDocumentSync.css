@@ -1,0 +1,32 @@
+.tax-panel-doc-sync {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, var(--code-bg));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tax-panel-doc-sync-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.tax-panel-doc-sync-label {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.tax-panel-doc-sync-err {
+  color: #b91c1c;
+}
+
+.tax-panel-doc-sync-btn {
+  flex-shrink: 0;
+}

@@ -39,10 +39,10 @@ async function deleteWithSimulatedProgress(
 
 export function useDocumentRemoval(options: {
   documents: DocumentListItem[]
-  loadDocuments: () => Promise<void>
+  refresh: () => Promise<void>
   showToast: (message: string) => void
 }) {
-  const { documents, loadDocuments, showToast } = options
+  const { documents, refresh, showToast } = options
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [removalRows, setRemovalRows] = useState<DocumentRemovalRow[]>([])
   const [isRemoving, setIsRemoving] = useState(false)
@@ -163,7 +163,7 @@ export function useDocumentRemoval(options: {
     setSelectedIds([])
 
     try {
-      await loadDocuments()
+      await refresh()
     } catch {
       /* list refresh failed; inline errors still apply */
     }
@@ -182,7 +182,7 @@ export function useDocumentRemoval(options: {
     } else if (failureCount > 0 && successCount === 0) {
       showToast('No documents were removed. See errors in the list next to each file.')
     }
-  }, [documents, selectedIds, loadDocuments, showToast])
+  }, [documents, selectedIds, refresh, showToast])
 
   return useMemo(
     () => ({

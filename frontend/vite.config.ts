@@ -71,7 +71,26 @@ function capstoneUploadStubPlugin(): Plugin {
     const path = raw.split('?')[0] ?? ''
 
     if (req.method === 'GET' && path === '/api/documents') {
-      sendJson(res, 200, stubDocuments)
+      const q = new URLSearchParams((raw.split('?')[1] ?? '').replace(/^\?/, ''))
+      const hasPaging = q.has('page') || q.has('pageSize')
+      if (!hasPaging) {
+        sendJson(res, 200, stubDocuments)
+        return
+      }
+      const page = Math.max(0, parseInt(q.get('page') ?? '0', 10) || 0)
+      const pageSize = Math.min(100, Math.max(1, parseInt(q.get('pageSize') ?? '10', 10) || 10))
+      const total = stubDocuments.length
+      const start = page * pageSize
+      const slice = stubDocuments.slice(start, start + pageSize)
+      const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1)
+      sendJson(res, 200, {
+        documents: slice,
+        total,
+        page,
+        pageSize,
+        hasMore: start + pageSize < total,
+        totalPages,
+      })
       return
     }
 
