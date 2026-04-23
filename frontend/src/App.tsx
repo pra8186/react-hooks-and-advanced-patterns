@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useId, useRef, useState, type DragEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent } from 'react'
 import {
   fetchUserTaxOverview,
   isLikelyUuid,
   type UserTaxOverviewResponse,
 } from './api/capstone'
-import { useFileUpload, validateUploadCandidate } from './hooks/useFileUpload'
+import { FilePreviewCard } from './components/FilePreviewCard'
+import { FileTransferBar } from './components/FileTransferBar'
+import {
+  aggregateProgressForFiles,
+  useFileUpload,
+  validateUploadCandidate,
+} from './hooks/useFileUpload'
 import './App.css'
 
 type DragScanState =
@@ -96,24 +102,16 @@ function App() {
     addFiles,
     removeFile,
     uploadAll,
-    progress,
     isUploading,
     errors,
-    uploadFileIndex,
-    uploadFileTotal,
-    uploadCurrentName,
     isLocalIngesting,
-    localIngestProgress,
-    localIngestFileIndex,
-    localIngestFileTotal,
-    localIngestCurrentName,
+    ingestBatchIds,
   } = useFileUpload()
 
   const transferBusy = isUploading || isLocalIngesting
 
   const [dragOverlay, setDragOverlay] = useState<DragOverlay>({ state: 'off' })
   const [uploadSuccess, setUploadSuccess] = useState(false)
-  /** Keep the bar at 100% briefly after a successful batch, then hide it. */
   const [showPostSuccessProgress, setShowPostSuccessProgress] = useState(false)
   const postSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -122,6 +120,36 @@ function App() {
       if (postSuccessTimerRef.current) clearTimeout(postSuccessTimerRef.current)
     }
   }, [])
+
+  const aggregateLocalProgress = useMemo(() => {
+    if (!isLocalIngesting || ingestBatchIds.length === 0) return 0
+    const subset = files.filter((f) => ingestBatchIds.includes(f.id))
+    return aggregateProgressForFiles(subset, 'localProgress')
+  }, [files, isLocalIngesting, ingestBatchIds])
+
+  const aggregateUploadProgress = useMemo(() => {
+    if (!isUploading || files.length === 0) return 0
+    return aggregateProgressForFiles(files, 'uploadProgress')
+  }, [files, isUploading])
+
+  const showGlobalProgress =
+    isLocalIngesting || isUploading || showPostSuccessProgress
+
+  const globalProgressPercent = isLocalIngesting
+    ? aggregateLocalProgress
+    : isUploading
+      ? aggregateUploadProgress
+      : showPostSuccessProgress
+        ? 100
+        : 0
+
+  const globalProgressLabel = isLocalIngesting
+    ? `Overall reading from device, ${globalProgressPercent}% across ${ingestBatchIds.length} file(s)`
+    : isUploading
+      ? `Overall uploading to server, ${globalProgressPercent}% across ${files.length} file(s)`
+      : showPostSuccessProgress
+        ? 'Overall upload finished, 100%'
+        : ''
 
   const [userIdInput, setUserIdInput] = useState('')
   const [overview, setOverview] = useState<UserTaxOverviewResponse | null>(null)
@@ -190,31 +218,6 @@ function App() {
       }, 900)
     }
   }
-
-  const showUploadProgress =
-    isLocalIngesting || isUploading || showPostSuccessProgress
-
-  const uploadBarPercent = isLocalIngesting
-    ? localIngestProgress
-    : isUploading
-      ? progress
-      : showPostSuccessProgress
-        ? 100
-        : 0
-
-  const uploadProgressLabel = isLocalIngesting
-    ? `Reading from device ${uploadBarPercent}%` +
-      (localIngestCurrentName
-        ? `, file ${localIngestFileIndex} of ${localIngestFileTotal}: ${localIngestCurrentName}`
-        : '')
-    : isUploading
-      ? `Uploading ${uploadBarPercent}%` +
-        (uploadCurrentName
-          ? `, file ${uploadFileIndex} of ${uploadFileTotal}: ${uploadCurrentName}`
-          : '')
-      : showPostSuccessProgress
-        ? 'Upload finished, 100%'
-        : 'No transfer in progress'
 
   return (
     <div className="dashboard">
@@ -350,54 +353,22 @@ function App() {
             </button>
           </div>
 
-          {showUploadProgress && (
-            <div className="upload-progress-section" aria-live="polite">
-              <div className="upload-progress-head">
-                <span className="upload-progress-title">
+          {showGlobalProgress && (
+            <div className="global-transfer-panel" aria-live="polite">
+              <div className="global-transfer-head">
+                <span className="global-transfer-title">
                   {isLocalIngesting
-                    ? 'Reading from your device'
+                    ? 'Overall · reading from your device'
                     : isUploading
-                      ? 'Uploading to server'
-                      : 'Upload complete'}
+                      ? 'Overall · uploading to server'
+                      : 'Overall · complete'}
                 </span>
               </div>
-              {isLocalIngesting &&
-                localIngestCurrentName &&
-                localIngestFileTotal > 0 && (
-                  <p className="upload-progress-file" title={localIngestCurrentName}>
-                    <span className="upload-progress-n">{localIngestFileIndex}</span>
-                    <span className="upload-progress-of"> / {localIngestFileTotal}</span>
-                    <span className="upload-progress-sep"> · </span>
-                    <span className="upload-progress-name">{localIngestCurrentName}</span>
-                  </p>
-                )}
-              {isUploading && uploadCurrentName && uploadFileTotal > 0 && (
-                <p className="upload-progress-file" title={uploadCurrentName}>
-                  <span className="upload-progress-n">{uploadFileIndex}</span>
-                  <span className="upload-progress-of"> / {uploadFileTotal}</span>
-                  <span className="upload-progress-sep"> · </span>
-                  <span className="upload-progress-name">{uploadCurrentName}</span>
-                </p>
-              )}
-              <progress
-                className="visually-hidden"
-                max={100}
-                value={uploadBarPercent}
-                aria-label={uploadProgressLabel}
+              <FileTransferBar
+                variant="global"
+                percent={globalProgressPercent}
+                ariaLabel={globalProgressLabel}
               />
-              <div className="upload-progress-bar-wrap">
-                <div
-                  className="progress-track upload-progress-bar"
-                  role="presentation"
-                  aria-hidden
-                >
-                  <div
-                    className="progress-fill progress-fill--yellow"
-                    style={{ width: `${uploadBarPercent}%` }}
-                  />
-                </div>
-                <span className="upload-progress-overlay-pct">{uploadBarPercent}%</span>
-              </div>
             </div>
           )}
 
@@ -418,28 +389,20 @@ function App() {
           )}
 
           <div className="queue">
-            <h3 className="queue-title">Queue · {files.length}</h3>
+            <h3 className="queue-title">Files · {files.length}</h3>
             {files.length === 0 ? (
               <p className="empty">No files staged.</p>
             ) : (
-              <ul className="file-list">
-                {files.map(({ id, file }) => (
-                  <li key={id} className="file-row">
-                    <span className="file-name" title={file.name}>
-                      {file.name}
-                    </span>
-                    <span className="file-meta">{formatSize(file.size)}</span>
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      onClick={(ev) => {
-                        ev.stopPropagation()
-                        removeFile(id)
-                      }}
+              <ul className="file-preview-grid">
+                {files.map((item) => (
+                  <li key={item.id}>
+                    <FilePreviewCard
+                      item={item}
+                      formatSize={formatSize}
+                      isUploading={isUploading}
+                      onRemove={() => removeFile(item.id)}
                       disabled={transferBusy}
-                    >
-                      Remove
-                    </button>
+                    />
                   </li>
                 ))}
               </ul>

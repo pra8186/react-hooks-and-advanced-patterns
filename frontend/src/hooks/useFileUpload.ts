@@ -22,6 +22,13 @@ export function validateUploadCandidate(file: File): string | null {
   return null
 }
 
+export function isImageStagedFile(file: File): boolean {
+  const t = file.type?.toLowerCase() ?? ''
+  if (t === 'image/jpeg' || t === 'image/png') return true
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  return ext === 'jpg' || ext === 'jpeg' || ext === 'png'
+}
+
 let idCounter = 0
 function nextId(): string {
   return `f-${Date.now()}-${++idCounter}`
@@ -30,12 +37,27 @@ function nextId(): string {
 export interface StagedFile {
   id: string
   file: File
+  /** Data URL from FileReader for images; null for PDF or before load. */
+  previewUrl: string | null
+  /** Reading file into the browser (FileReader), 0–100. */
+  localProgress: number
+  /** Uploading this file to the server, 0–100. */
+  uploadProgress: number
+}
+
+/** Overall 0–100% from per-file progress weighted by file size (multi-file selection). */
+export function aggregateProgressForFiles(
+  items: StagedFile[],
+  key: 'localProgress' | 'uploadProgress',
+): number {
+  if (!items.length) return 0
+  const total = items.reduce((s, f) => s + f.file.size, 0) || 1
+  const done = items.reduce((s, f) => s + (f[key] / 100) * f.file.size, 0)
+  return Math.min(100, Math.round((done / total) * 100))
 }
 
 export interface UseFileUploadOptions {
-  /** POST target; default uses Vite proxy to capstone (7070). Override with full URL if needed. */
   uploadUrl?: string
-  /** Multipart field name (Spring often uses `file`). */
   fileFieldName?: string
 }
 
@@ -56,20 +78,41 @@ function messageFromAxiosError(error: AxiosError): string {
   return error.message || 'Upload failed'
 }
 
-/** Read file into the browser with progress (same underlying read the engine uses for upload bodies). */
-function readFileIntoBrowser(
+function readAsDataURLWithProgress(
   file: File,
-  onFilePercent: (pct: number) => void,
+  onPercent: (pct: number) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) {
+        onPercent(Math.min(100, Math.round((e.loaded / e.total) * 100)))
+      }
+    }
+    reader.onload = () => {
+      onPercent(100)
+      const r = reader.result
+      if (typeof r === 'string') resolve(r)
+      else reject(new Error(`Could not preview ${file.name}`))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`))
+    reader.readAsDataURL(file)
+  })
+}
+
+function readAsArrayBufferWithProgress(
+  file: File,
+  onPercent: (pct: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onprogress = (e) => {
       if (e.lengthComputable && e.total > 0) {
-        onFilePercent(Math.min(100, Math.round((e.loaded / e.total) * 100)))
+        onPercent(Math.min(100, Math.round((e.loaded / e.total) * 100)))
       }
     }
     reader.onload = () => {
-      onFilePercent(100)
+      onPercent(100)
       resolve()
     }
     reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`))
@@ -77,28 +120,16 @@ function readFileIntoBrowser(
   })
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
 export function useFileUpload(options: UseFileUploadOptions = {}) {
   const uploadUrl = options.uploadUrl ?? defaultUploadUrl()
   const fileFieldName = options.fileFieldName ?? 'file'
 
   const [files, setFiles] = useState<StagedFile[]>([])
-  const [progress, setProgress] = useState(0)
   const [isUploading, setIsUploading] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
-  /** 1-based index of the file currently uploading; 0 when idle. */
-  const [uploadFileIndex, setUploadFileIndex] = useState(0)
-  const [uploadFileTotal, setUploadFileTotal] = useState(0)
-  const [uploadCurrentName, setUploadCurrentName] = useState<string | null>(null)
-
-  const [localIngestProgress, setLocalIngestProgress] = useState(0)
   const [isLocalIngesting, setIsLocalIngesting] = useState(false)
-  const [localIngestFileIndex, setLocalIngestFileIndex] = useState(0)
-  const [localIngestFileTotal, setLocalIngestFileTotal] = useState(0)
-  const [localIngestCurrentName, setLocalIngestCurrentName] = useState<string | null>(null)
+  /** Staged file ids for the current add-files batch (for overall local progress). */
+  const [ingestBatchIds, setIngestBatchIds] = useState<string[]>([])
 
   const filesRef = useRef<StagedFile[]>([])
   useEffect(() => {
@@ -108,69 +139,73 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
   const uploadingRef = useRef(false)
   const ingestingRef = useRef(false)
 
-  const addFiles = useCallback(async (incoming: FileList | File[]) => {
-    if (uploadingRef.current || ingestingRef.current) return
+  const patchFile = useCallback((id: string, partial: Partial<Pick<StagedFile, 'previewUrl' | 'localProgress' | 'uploadProgress'>>) => {
+    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
+  }, [])
 
-    const list = Array.from(incoming as Iterable<File>)
-    const batchErrors: string[] = []
-    const validFiles: File[] = []
+  const ingestOne = useCallback(
+    async (id: string, file: File) => {
+      if (isImageStagedFile(file)) {
+        const dataUrl = await readAsDataURLWithProgress(file, (pct) => patchFile(id, { localProgress: pct }))
+        patchFile(id, { previewUrl: dataUrl, localProgress: 100 })
+      } else {
+        await readAsArrayBufferWithProgress(file, (pct) => patchFile(id, { localProgress: pct }))
+        patchFile(id, { localProgress: 100 })
+      }
+    },
+    [patchFile],
+  )
 
-    for (const file of list) {
-      const err = validateUploadCandidate(file)
-      if (err) batchErrors.push(err)
-      else validFiles.push(file)
-    }
+  const addFiles = useCallback(
+    async (incoming: FileList | File[]) => {
+      if (uploadingRef.current || ingestingRef.current) return
 
-    if (batchErrors.length) {
-      setErrors((prev) => [...prev, ...batchErrors])
-    }
-    if (validFiles.length === 0) return
+      const list = Array.from(incoming as Iterable<File>)
+      const batchErrors: string[] = []
+      const validFiles: File[] = []
 
-    ingestingRef.current = true
-    setIsLocalIngesting(true)
-    setLocalIngestProgress(0)
-    setLocalIngestFileTotal(validFiles.length)
-    setLocalIngestFileIndex(0)
-    setLocalIngestCurrentName(null)
-
-    const totalBytes = validFiles.reduce((sum, f) => sum + f.size, 0) || 1
-    let completedBytes = 0
-
-    try {
-      for (let i = 0; i < validFiles.length; i++) {
-        const file = validFiles[i]!
-        setLocalIngestFileIndex(i + 1)
-        setLocalIngestCurrentName(file.name)
-
-        await readFileIntoBrowser(file, (filePct) => {
-          const slice = (filePct / 100) * file.size
-          setLocalIngestProgress(
-            Math.min(100, Math.round(((completedBytes + slice) / totalBytes) * 100)),
-          )
-        })
-
-        completedBytes += file.size
-        setLocalIngestProgress(Math.min(100, Math.round((completedBytes / totalBytes) * 100)))
+      for (const file of list) {
+        const err = validateUploadCandidate(file)
+        if (err) batchErrors.push(err)
+        else validFiles.push(file)
       }
 
-      const staged: StagedFile[] = validFiles.map((file) => ({ id: nextId(), file }))
-      setFiles((prev) => [...prev, ...staged])
-      setLocalIngestProgress(100)
-      await delay(380)
-    } catch (e) {
-      setErrors((prev) => [
-        ...prev,
-        e instanceof Error ? e.message : 'Could not read file from this device',
-      ])
-    } finally {
-      ingestingRef.current = false
-      setIsLocalIngesting(false)
-      setLocalIngestProgress(0)
-      setLocalIngestFileIndex(0)
-      setLocalIngestFileTotal(0)
-      setLocalIngestCurrentName(null)
-    }
-  }, [])
+      if (batchErrors.length) {
+        setErrors((prev) => [...prev, ...batchErrors])
+      }
+      if (validFiles.length === 0) return
+
+      const newItems: StagedFile[] = validFiles.map((file) => ({
+        id: nextId(),
+        file,
+        previewUrl: null,
+        localProgress: 0,
+        uploadProgress: 0,
+      }))
+
+      const batchIds = new Set(newItems.map((n) => n.id))
+      const batchIdList = newItems.map((n) => n.id)
+      setFiles((prev) => [...prev, ...newItems])
+      ingestingRef.current = true
+      setIngestBatchIds(batchIdList)
+      setIsLocalIngesting(true)
+
+      try {
+        await Promise.all(newItems.map((item) => ingestOne(item.id, item.file)))
+      } catch (e) {
+        setErrors((prev) => [
+          ...prev,
+          e instanceof Error ? e.message : 'Could not read file from this device',
+        ])
+        setFiles((prev) => prev.filter((f) => !batchIds.has(f.id)))
+      } finally {
+        ingestingRef.current = false
+        setIsLocalIngesting(false)
+        setIngestBatchIds([])
+      }
+    },
+    [ingestOne],
+  )
 
   const removeFile = useCallback((id: string) => {
     setFiles((prev) => prev.filter((f) => f.id !== id))
@@ -182,47 +217,34 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
 
     uploadingRef.current = true
     setIsUploading(true)
-    setProgress(0)
     setErrors([])
-    setUploadFileTotal(queue.length)
-    setUploadFileIndex(0)
-    setUploadCurrentName(null)
-
-    const totalBytes = queue.reduce((sum, { file }) => sum + file.size, 0) || 1
-    let completedBytes = 0
+    setFiles((prev) => prev.map((f) => ({ ...f, uploadProgress: 0 })))
 
     try {
-      for (let i = 0; i < queue.length; i++) {
-        const { file } = queue[i]!
-        setUploadFileIndex(i + 1)
-        setUploadCurrentName(file.name)
-
+      for (const item of queue) {
+        const { id, file } = item
         const body = new FormData()
         body.append(fileFieldName, file)
 
         await axios.post(uploadUrl, body, {
           onUploadProgress: (evt) => {
-            const slice =
-              evt.total && evt.total > 0
-                ? Math.min((evt.loaded / evt.total) * file.size, file.size)
-                : Math.min(evt.loaded, file.size)
-            const combined = completedBytes + slice
-            setProgress(Math.min(100, Math.round((combined / totalBytes) * 100)))
+            let pct: number
+            if (evt.total && evt.total > 0) {
+              pct = Math.min(100, Math.round((evt.loaded / evt.total) * 100))
+            } else {
+              pct = Math.min(100, Math.round((evt.loaded / Math.max(file.size, 1)) * 100))
+            }
+            patchFile(id, { uploadProgress: pct })
           },
         })
 
-        completedBytes += file.size
-        setProgress(Math.min(100, Math.round((completedBytes / totalBytes) * 100)))
+        patchFile(id, { uploadProgress: 100 })
       }
 
       setFiles([])
-      setProgress(100)
-      setUploadFileIndex(0)
-      setUploadFileTotal(0)
-      setUploadCurrentName(null)
       return true
     } catch (e) {
-      setProgress(0)
+      setFiles((prev) => prev.map((f) => ({ ...f, uploadProgress: 0 })))
       if (axios.isAxiosError(e)) {
         setErrors([messageFromAxiosError(e)])
       } else {
@@ -232,11 +254,8 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
     } finally {
       uploadingRef.current = false
       setIsUploading(false)
-      setUploadFileIndex(0)
-      setUploadFileTotal(0)
-      setUploadCurrentName(null)
     }
-  }, [uploadUrl, fileFieldName])
+  }, [uploadUrl, fileFieldName, patchFile])
 
   return useMemo(
     () => ({
@@ -244,34 +263,11 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
       addFiles,
       removeFile,
       uploadAll,
-      progress,
       isUploading,
       errors,
-      uploadFileIndex,
-      uploadFileTotal,
-      uploadCurrentName,
       isLocalIngesting,
-      localIngestProgress,
-      localIngestFileIndex,
-      localIngestFileTotal,
-      localIngestCurrentName,
+      ingestBatchIds,
     }),
-    [
-      files,
-      addFiles,
-      removeFile,
-      uploadAll,
-      progress,
-      isUploading,
-      errors,
-      uploadFileIndex,
-      uploadFileTotal,
-      uploadCurrentName,
-      isLocalIngesting,
-      localIngestProgress,
-      localIngestFileIndex,
-      localIngestFileTotal,
-      localIngestCurrentName,
-    ],
+    [files, addFiles, removeFile, uploadAll, isUploading, errors, isLocalIngesting, ingestBatchIds],
   )
 }

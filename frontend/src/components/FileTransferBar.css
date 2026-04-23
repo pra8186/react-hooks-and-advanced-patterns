@@ -1,0 +1,71 @@
+.file-transfer-bar-wrap .visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.file-transfer-bar-wrap {
+  position: relative;
+  margin-top: 8px;
+}
+
+.file-transfer-bar-wrap--global {
+  margin-top: 4px;
+}
+
+.file-transfer-bar-wrap--global .file-transfer-track {
+  height: 28px;
+}
+
+.file-transfer-bar-wrap--global .file-transfer-overlay-pct {
+  font-size: 13px;
+}
+
+.file-transfer-track {
+  height: 22px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.file-transfer-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(180deg, #fde047 0%, #eab308 48%, #ca8a04 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35);
+  transition: width 0.18s ease-out;
+}
+
+.file-transfer-overlay-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #1c1917;
+  text-shadow:
+    0 0 1px rgb(255 255 255 / 0.95),
+    0 0 5px rgb(255 250 220 / 0.9),
+    0 1px 0 rgb(255 255 255 / 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  .file-transfer-overlay-pct {
+    color: #fefce8;
+    text-shadow:
+      0 0 2px rgb(0 0 0 / 0.65),
+      0 1px 3px rgb(0 0 0 / 0.5);
+  }
+}
