@@ -107,6 +107,75 @@
   font-size: 12px;
 }
 
+.file-preview-entity {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--code-bg) 40%, var(--bg));
+}
+
+.file-preview-entity--incomplete {
+  border-color: color-mix(in srgb, var(--accent-border) 55%, var(--border));
+}
+
+.file-preview-entity-legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.file-preview-entity-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.9;
+}
+
+.file-preview-entity-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-preview-entity-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.file-preview-entity-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.file-preview-entity-option input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.file-preview-entity-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-preview-entity-label {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.file-preview-entity-desc {
+  font-size: 12px;
+  opacity: 0.88;
+  line-height: 1.35;
+}
+
 .file-preview-pdf-modal-backdrop {
   position: fixed;
   inset: 0;

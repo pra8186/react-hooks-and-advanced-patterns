@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { DOCUMENT_ENTITY_OPTIONS, type DocumentEntityValue } from '../domain/documentEntities'
 import type { StagedFile } from '../hooks/useFileUpload'
 import { isImageStagedFile } from '../hooks/useFileUpload'
 import { EntityFileTransferBars } from './EntityFileTransferBars'
@@ -46,16 +47,19 @@ export function FilePreviewCard({
   item,
   formatSize,
   onRemove,
+  onEntityTypeChange,
   disabled,
   isUploading,
 }: {
   item: StagedFile
   formatSize: (n: number) => string
   onRemove: () => void
+  onEntityTypeChange: (value: DocumentEntityValue) => void
   disabled: boolean
   isUploading: boolean
 }) {
-  const { file, previewUrl, localProgress, uploadProgress } = item
+  const { file, previewUrl, localProgress, uploadProgress, entityType, entityTypeAutoDetected } =
+    item
   const image = isImageStagedFile(file)
   const kind = image ? 'image' : 'pdf'
   const pdfPreviewTitleId = useId()
@@ -133,6 +137,34 @@ export function FilePreviewCard({
           <span className="file-preview-dot"> · </span>
           <span className="file-preview-type">{file.type || (image ? 'image' : 'application/pdf')}</span>
         </p>
+        <fieldset
+          className={`file-preview-entity${!entityType ? ' file-preview-entity--incomplete' : ''}`}
+          aria-required="true"
+          aria-invalid={!entityType}
+        >
+          <legend className="file-preview-entity-legend">Document type (required)</legend>
+          {entityTypeAutoDetected && entityType ? (
+            <p className="file-preview-entity-hint">Suggested from filename — confirm or change.</p>
+          ) : null}
+          <div className="file-preview-entity-radios" role="radiogroup" aria-label="Document type">
+            {DOCUMENT_ENTITY_OPTIONS.map((opt) => (
+              <label key={opt.value} className="file-preview-entity-option">
+                <input
+                  type="radio"
+                  name={`document-entity-${item.id}`}
+                  value={opt.value}
+                  checked={entityType === opt.value}
+                  onChange={() => onEntityTypeChange(opt.value)}
+                  disabled={disabled}
+                />
+                <span className="file-preview-entity-option-body">
+                  <span className="file-preview-entity-label">{opt.label}</span>
+                  <span className="file-preview-entity-desc">{opt.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <EntityFileTransferBars
           fileName={file.name}
           localProgress={localProgress}

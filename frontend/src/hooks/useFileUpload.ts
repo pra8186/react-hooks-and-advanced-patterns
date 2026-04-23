@@ -1,5 +1,9 @@
 import axios, { type AxiosError } from 'axios'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type DocumentEntityValue,
+  inferDocumentEntityFromFileName,
+} from '../domain/documentEntities'
 
 export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 const ALLOWED_MIME = new Set(['application/pdf', 'image/jpeg', 'image/png'])
@@ -43,6 +47,13 @@ export interface StagedFile {
   localProgress: number
   /** Uploading this file to the server, 0–100. */
   uploadProgress: number
+  /**
+   * Tax / finance document category (required before upload). Values align with
+   * Java-style enum names for future capstone DTOs (`W2`, `FORM_1099`, …).
+   */
+  entityType: DocumentEntityValue | null
+  /** True when `entityType` was set by filename inference at ingest time. */
+  entityTypeAutoDetected: boolean
 }
 
 /** Overall 0–100% from per-file progress weighted by file size (multi-file selection). */
@@ -139,9 +150,28 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
   const uploadingRef = useRef(false)
   const ingestingRef = useRef(false)
 
-  const patchFile = useCallback((id: string, partial: Partial<Pick<StagedFile, 'previewUrl' | 'localProgress' | 'uploadProgress'>>) => {
-    setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
-  }, [])
+  const patchFile = useCallback(
+    (
+      id: string,
+      partial: Partial<
+        Pick<
+          StagedFile,
+          | 'previewUrl'
+          | 'localProgress'
+          | 'uploadProgress'
+          | 'entityType'
+          | 'entityTypeAutoDetected'
+        >
+      >,
+    ) => {
+      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
+    },
+    [],
+  )
+
+  const setFileEntityType = useCallback((id: string, entityType: DocumentEntityValue) => {
+    patchFile(id, { entityType, entityTypeAutoDetected: false })
+  }, [patchFile])
 
   const ingestOne = useCallback(
     async (id: string, file: File) => {
@@ -175,13 +205,18 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
       }
       if (validFiles.length === 0) return
 
-      const newItems: StagedFile[] = validFiles.map((file) => ({
-        id: nextId(),
-        file,
-        previewUrl: null,
-        localProgress: 0,
-        uploadProgress: 0,
-      }))
+      const newItems: StagedFile[] = validFiles.map((file) => {
+        const inferred = inferDocumentEntityFromFileName(file.name)
+        return {
+          id: nextId(),
+          file,
+          previewUrl: null,
+          localProgress: 0,
+          uploadProgress: 0,
+          entityType: inferred,
+          entityTypeAutoDetected: inferred !== null,
+        }
+      })
 
       const batchIds = new Set(newItems.map((n) => n.id))
       const batchIdList = newItems.map((n) => n.id)
@@ -215,6 +250,12 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
     const queue = [...filesRef.current]
     if (!queue.length || uploadingRef.current) return false
 
+    const missingType = queue.some((item) => !item.entityType)
+    if (missingType) {
+      setErrors(['Every file must have a document type selected before upload.'])
+      return false
+    }
+
     uploadingRef.current = true
     setIsUploading(true)
     setErrors([])
@@ -222,9 +263,12 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
 
     try {
       for (const item of queue) {
-        const { id, file } = item
+        const { id, file, entityType } = item
         const body = new FormData()
         body.append(fileFieldName, file)
+        if (entityType) {
+          body.append('entityType', entityType)
+        }
 
         await axios.post(uploadUrl, body, {
           onUploadProgress: (evt) => {
@@ -263,11 +307,22 @@ export function useFileUpload(options: UseFileUploadOptions = {}) {
       addFiles,
       removeFile,
       uploadAll,
+      setFileEntityType,
       isUploading,
       errors,
       isLocalIngesting,
       ingestBatchIds,
     }),
-    [files, addFiles, removeFile, uploadAll, isUploading, errors, isLocalIngesting, ingestBatchIds],
+    [
+      files,
+      addFiles,
+      removeFile,
+      uploadAll,
+      setFileEntityType,
+      isUploading,
+      errors,
+      isLocalIngesting,
+      ingestBatchIds,
+    ],
   )
 }

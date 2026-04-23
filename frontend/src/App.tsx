@@ -101,6 +101,7 @@ function App() {
     files,
     addFiles,
     removeFile,
+    setFileEntityType,
     uploadAll,
     isUploading,
     errors,
@@ -109,6 +110,11 @@ function App() {
   } = useFileUpload()
 
   const transferBusy = isUploading || isLocalIngesting
+
+  const everyStagedFileHasEntityType = useMemo(
+    () => files.length > 0 && files.every((f) => f.entityType != null),
+    [files],
+  )
 
   const [dragOverlay, setDragOverlay] = useState<DragOverlay>({ state: 'off' })
   const [uploadSuccess, setUploadSuccess] = useState(false)
@@ -347,7 +353,7 @@ function App() {
               type="button"
               className="btn"
               onClick={() => void handleUploadAll()}
-              disabled={transferBusy || files.length === 0}
+              disabled={transferBusy || files.length === 0 || !everyStagedFileHasEntityType}
             >
               {isUploading ? 'Uploading…' : 'Upload all'}
             </button>
@@ -401,6 +407,7 @@ function App() {
                       formatSize={formatSize}
                       isUploading={isUploading}
                       onRemove={() => removeFile(item.id)}
+                      onEntityTypeChange={(value) => setFileEntityType(item.id, value)}
                       disabled={transferBusy}
                     />
                   </li>
