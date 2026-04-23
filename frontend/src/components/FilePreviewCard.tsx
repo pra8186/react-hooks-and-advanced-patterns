@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useId, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { StagedFile } from '../hooks/useFileUpload'
 import { isImageStagedFile } from '../hooks/useFileUpload'
 import { EntityFileTransferBars } from './EntityFileTransferBars'
@@ -56,18 +58,65 @@ export function FilePreviewCard({
   const { file, previewUrl, localProgress, uploadProgress } = item
   const image = isImageStagedFile(file)
   const kind = image ? 'image' : 'pdf'
+  const pdfPreviewTitleId = useId()
+  const [pdfModalOpen, setPdfModalOpen] = useState(false)
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null)
+
+  const closePdfPreview = useCallback(() => {
+    setPdfBlobUrl((u) => {
+      if (u) URL.revokeObjectURL(u)
+      return null
+    })
+    setPdfModalOpen(false)
+  }, [])
+
+  const openPdfPreview = useCallback(() => {
+    if (image || localProgress < 100) return
+    setPdfBlobUrl(URL.createObjectURL(file))
+    setPdfModalOpen(true)
+  }, [image, localProgress, file])
+
+  useEffect(() => {
+    return () => {
+      setPdfBlobUrl((u) => {
+        if (u) URL.revokeObjectURL(u)
+        return null
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pdfModalOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closePdfPreview()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pdfModalOpen, closePdfPreview])
 
   return (
     <article className="file-preview-card">
-      <div className="file-preview-thumb">
+      <div
+        className={`file-preview-thumb${!image && localProgress >= 100 ? ' file-preview-thumb--pdf-ready' : ''}`}
+      >
         {previewUrl && image ? (
           <img
             src={previewUrl}
             alt={`Preview of ${file.name}`}
             className="file-preview-thumb-img"
           />
-        ) : (
+        ) : image ? (
           <FileTypeIcon kind={kind} />
+        ) : (
+          <button
+            type="button"
+            className="file-preview-pdf-hit"
+            onClick={openPdfPreview}
+            disabled={localProgress < 100}
+            aria-label={`Open full preview of PDF ${file.name}`}
+          >
+            <FileTypeIcon kind="pdf" />
+          </button>
         )}
       </div>
       <div className="file-preview-body">
@@ -91,6 +140,40 @@ export function FilePreviewCard({
           isUploading={isUploading}
         />
       </div>
+
+      {pdfModalOpen &&
+        pdfBlobUrl &&
+        !image &&
+        createPortal(
+          <div
+            className="file-preview-pdf-modal-backdrop"
+            role="presentation"
+            onClick={closePdfPreview}
+          >
+            <div
+              className="file-preview-pdf-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={pdfPreviewTitleId}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="file-preview-pdf-modal-head">
+                <h2 id={pdfPreviewTitleId} className="file-preview-pdf-modal-title">
+                  {file.name}
+                </h2>
+                <button type="button" className="btn file-preview-pdf-modal-close" onClick={closePdfPreview}>
+                  Close
+                </button>
+              </header>
+              <iframe
+                className="file-preview-pdf-iframe"
+                src={pdfBlobUrl}
+                title={`PDF preview: ${file.name}`}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
     </article>
   )
 }
